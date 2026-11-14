@@ -59,6 +59,8 @@ class Controller(NSObject):
         self.overlay_generation = 0
         self.gesture = TripleClick()
         self.monitors = []
+        self.monitor_permission = None
+        self.watching_permissions = False
         self.status = A.NSStatusBar.systemStatusBar().statusItemWithLength_(A.NSVariableStatusItemLength)
         self.status.button().setTitle_('abj')
         self.menu = A.NSMenu.alloc().init()
@@ -121,10 +123,21 @@ class Controller(NSObject):
         for monitor in self.monitors:
             A.NSEvent.removeMonitor_(monitor)
         self.monitors = []
-        mask = A.NSEventMaskLeftMouseDown | A.NSEventMaskKeyDown
-        monitor = A.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(mask, self.event)
+        self.monitor_permission = bool(Quartz.AXIsProcessTrusted())
+        # Mouse monitoring can work without Accessibility; keyboard monitoring cannot.
+        monitor = A.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            A.NSEventMaskLeftMouseDown, self.event)
         if monitor is not None:
             self.monitors.append(monitor)
+        keyboard_monitor = None
+        if self.monitor_permission:
+            keyboard_monitor = A.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                A.NSEventMaskKeyDown, self.event)
+            if keyboard_monitor is not None:
+                self.monitors.append(keyboard_monitor)
+        self.menu.itemAtIndex_(2).setTitle_(
+            'Скрыть ответ (Esc)' if keyboard_monitor is not None else
+            'Скрыть ответ (Esc: проверьте Универсальный доступ)')
         # Local Esc also works while one of our own windows has focus.
         monitor = A.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
             A.NSEventMaskKeyDown, self.local_event)
@@ -132,16 +145,29 @@ class Controller(NSObject):
             self.monitors.append(monitor)
 
     @objc.python_method
+    def watch_permissions(self):
+        if not self.watching_permissions:
+            return
+        if bool(Quartz.AXIsProcessTrusted()) != self.monitor_permission:
+            self.install_monitors()
+        AppHelper.callLater(2, self.watch_permissions)
+
+    def dismiss_(self, sender):
+        # Esc also dismisses a pending result so it cannot reappear after the request finishes.
+        self.generation += 1
+        self.hide_(sender)
+
+    @objc.python_method
     def local_event(self, event):
         if event.keyCode() == 53:
-            self.hide_(None)
+            self.dismiss_(None)
         return event
 
     @objc.python_method
     def event(self, event):
         if event.type() == A.NSEventTypeKeyDown:
             if event.keyCode() == 53:
-                self.hide_(None)
+                self.dismiss_(None)
         elif self.armed and self.session and not self.busy and not self.configuring:
             point = A.NSEvent.mouseLocation()
             if self.gesture.click(event.timestamp(), point.x, point.y):
@@ -232,7 +258,10 @@ class Controller(NSObject):
         alert('Разрешения macOS',
               'В Системных настройках → Конфиденциальность и безопасность разрешите abj '
               '«Запись экрана» и «Универсальный доступ». Затем полностью закройте и откройте abj. '
-              'Без этих разрешений снимок и глобальные клавиши могут не работать.')
+              'Без Универсального доступа Esc не работает в других приложениях, даже если '
+              'тройной клик уже работает. После обновления abj может понадобиться удалить старую '
+              'запись из списка Универсального доступа и добавить текущий abj.app заново.')
+        self.install_monitors()
 
     def capture_(self, sender):
         if self.busy or self.configuring:
@@ -274,6 +303,7 @@ class Controller(NSObject):
 
     def quit_(self, sender):
         self.session = None
+        self.watching_permissions = False
         for monitor in self.monitors:
             A.NSEvent.removeMonitor_(monitor)
         self.monitors = []
@@ -298,6 +328,35 @@ def self_test(controller, report_path):
     AppHelper.callAfter(A.NSApp.abortModal)
     controller.settings_(None)
     assert controller.session is None and not controller.configuring
+    # Exercise both key event routes using real NSEvent objects; no input is injected.
+    escape = A.NSEvent.keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode_(
+        A.NSEventTypeKeyDown, (0, 0), 0, 0, 0, None, '\x1b', '\x1b', False, 53)
+    other = A.NSEvent.keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode_(
+        A.NSEventTypeKeyDown, (0, 0), 0, 0, 0, None, 'a', 'a', False, 0)
+    for handler in (controller.local_event, controller.event):
+        controller.show('1) A')
+        handler(other)
+        assert controller.panel.isVisible()
+        pending_generation = controller.generation
+        handler(escape)
+        assert not controller.panel.isVisible()
+        controller.finish('late answer', pending_generation)
+        assert not controller.panel.isVisible()
+    # Check permission changes reinstall monitors without generating real global input.
+    from unittest.mock import patch
+    with patch.object(Quartz, 'AXIsProcessTrusted', return_value=False):
+        controller.install_monitors()
+        assert 'Универсальный доступ' in str(controller.menu.itemAtIndex_(2).title())
+    controller.watching_permissions = True
+    with patch.object(Quartz, 'AXIsProcessTrusted', return_value=True), \
+            patch.object(controller, 'install_monitors') as reinstall, \
+            patch.object(AppHelper, 'callLater'):
+        controller.watch_permissions()
+        reinstall.assert_called_once()
+    controller.watching_permissions = False
+    for monitor in controller.monitors:
+        A.NSEvent.removeMonitor_(monitor)
+    controller.monitors = []
     # Isolated synthetic entry: never read or change the user's saved session.
     import uuid
     service = 'io.github.zimbwq.abjmac.selftest.' + uuid.uuid4().hex
@@ -318,7 +377,9 @@ def self_test(controller, report_path):
     report = {'status': 'ok', 'architecture': platform.machine(),
               'checks': ['Cocoa menu', 'settings dialog', 'Edit/paste menu',
                          'transparent panel show/hide', 'arm toggle',
-                         'Pillow PNG', 'bundled TLS certificates', 'Keychain save/restore/delete'],
+                         'Pillow PNG', 'bundled TLS certificates', 'Keychain save/restore/delete',
+                         'local/global Esc handlers', 'Esc dismisses pending answer',
+                         'Accessibility status and monitor refresh'],
               'not_tested': ['user permissions', 'real screenshot', 'global input', 'live paid APIs']}
     Path(report_path).write_text(json.dumps(report, indent=2), encoding='utf-8')
 
@@ -333,6 +394,8 @@ def main():
         self_test(controller, sys.argv[2])
         return
     controller.install_monitors()
+    controller.watching_permissions = True
+    controller.watch_permissions()
     AppHelper.callAfter(controller.restore_session)
     AppHelper.runEventLoop()
 
