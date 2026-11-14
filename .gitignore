@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.zip
+*.log
+api-key.txt
+.env*
+*.key
+*.pem
+*report*.json

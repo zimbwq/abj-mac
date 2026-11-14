@@ -1,0 +1,73 @@
+name: Build Apple Silicon
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Verify native architecture
+        run: |
+          test "$(uname -m)" = arm64
+          python -c "import platform; assert platform.machine() == 'arm64'"
+      - name: Install
+        run: python -m pip install -r requirements.txt 'pyinstaller>=6.16,<7'
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Cocoa source smoke test
+        run: |
+          python mac_app.py --self-test source-report.json
+          cat source-report.json
+      - name: Build app
+        run: python -m PyInstaller --clean --noconfirm abj.spec
+      - name: Verify app
+        run: |
+          test "$(lipo -archs dist/abj.app/Contents/MacOS/abj)" = arm64
+          codesign --verify --deep --strict --verbose=2 dist/abj.app
+          dist/abj.app/Contents/MacOS/abj --self-test bundle-report.json
+          cat bundle-report.json
+          python -c "import json; r=json.load(open('bundle-report.json')); assert r['status']=='ok' and r['architecture']=='arm64'"
+      - name: Package portable ZIP
+        run: |
+          mkdir -p package
+          cp -R dist/abj.app package/
+          cp README.md package/README.md
+          ditto -c -k --sequesterRsrc --keepParent package abj-mac-arm64.zip
+          shasum -a 256 abj-mac-arm64.zip > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abj-mac-arm64
+          path: |
+            abj-mac-arm64.zip
+            SHA256SUMS.txt
+            source-report.json
+            bundle-report.json
+          retention-days: 30
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: abj-mac-arm64
+          path: release
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" release/* --title "abj Mac $TAG — Apple Silicon" --notes "Portable macOS 15+ arm64 app with OpenAI and Gemini. No API key included. Ad-hoc signed; not Apple-notarized. Automated Cocoa and bundled-runtime smoke tests passed. Real screen permissions, global input and live API calls require manual testing on a Mac."
