@@ -34,6 +34,19 @@ def label(text, frame):
     return field
 
 
+def install_edit_menu(app):
+    # Cocoa text fields rely on the standard responder-chain Edit menu for Cmd+V.
+    main_menu = A.NSMenu.alloc().init()
+    root_item = A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_('Edit', None, '')
+    edit = A.NSMenu.alloc().initWithTitle_('Edit')
+    for title, action, key in [('Cut', 'cut:', 'x'), ('Copy', 'copy:', 'c'),
+                              ('Paste', 'paste:', 'v'), ('Select All', 'selectAll:', 'a')]:
+        edit.addItem_(A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, key))
+    root_item.setSubmenu_(edit)
+    main_menu.addItem_(root_item)
+    app.setMainMenu_(main_menu)
+
+
 class Controller(NSObject):
     @objc.python_method
     def setup(self):
@@ -244,6 +257,11 @@ def self_test(controller, report_path):
     controller.toggle_(None)
     assert controller.armed
     assert controller.status.menu().numberOfItems() == 6
+    assert A.NSApp.mainMenu().itemAtIndex_(0).submenu().numberOfItems() == 4
+    # Build the actual settings dialog, then cancel it without credentials.
+    AppHelper.callAfter(A.NSApp.abortModal)
+    controller.settings_(None)
+    assert controller.session is None and not controller.configuring
     # Exercise native dependencies and the exact SSL CA path from the bundle.
     import certifi
     import ssl
@@ -251,7 +269,8 @@ def self_test(controller, report_path):
     ssl.create_default_context(cafile=certifi.where())
     assert encode_image(Image.new('RGB', (2, 2))).startswith('data:image/png;base64,')
     report = {'status': 'ok', 'architecture': platform.machine(),
-              'checks': ['Cocoa menu', 'transparent panel show/hide', 'arm toggle',
+              'checks': ['Cocoa menu', 'settings dialog', 'Edit/paste menu',
+                         'transparent panel show/hide', 'arm toggle',
                          'Pillow PNG', 'bundled TLS certificates'],
               'not_tested': ['user permissions', 'real screenshot', 'global input', 'live paid APIs']}
     Path(report_path).write_text(json.dumps(report, indent=2), encoding='utf-8')
@@ -260,6 +279,7 @@ def self_test(controller, report_path):
 def main():
     app = A.NSApplication.sharedApplication()
     app.setActivationPolicy_(A.NSApplicationActivationPolicyAccessory)
+    install_edit_menu(app)
     controller = Controller.alloc().init()
     controller.setup()
     if len(sys.argv) == 3 and sys.argv[1] == '--self-test':
