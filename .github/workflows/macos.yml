@@ -70,4 +70,4 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" release/* --title "abj Mac $TAG — Apple Silicon" --notes "Portable macOS 15+ arm64 app with OpenAI and Gemini. No API key included. Ad-hoc signed; not Apple-notarized. Automated Cocoa and bundled-runtime smoke tests passed. Real screen permissions, global input and live API calls require manual testing on a Mac."
+          gh release create "$TAG" release/* --title "abj Mac $TAG — Apple Silicon" --notes "Portable macOS 15+ arm64 app with OpenAI and Gemini. Saves the selected API key, provider and model in macOS Keychain and restores them on launch. Includes a delete-saved-key menu action. No API key included. Ad-hoc signed; not Apple-notarized. Automated Cocoa, Keychain save/restore/delete and bundled-runtime smoke tests passed. Real screen permissions, global input and live API calls require manual testing on a Mac."

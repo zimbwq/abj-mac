@@ -13,6 +13,7 @@ from PyObjCTools import AppHelper
 
 from cloud_backend import Session, DEFAULT_MODELS, answer_visual, encode_image
 from gestures import TripleClick
+from credentials import CredentialStore
 
 
 def alert(title, message):
@@ -64,7 +65,8 @@ class Controller(NSObject):
         self.menu.setAutoenablesItems_(False)
         for title, action in [('Снять экран', 'capture:'), ('Тройной клик: вкл.', 'toggle:'),
                               ('Скрыть ответ (Esc)', 'hide:'), ('Провайдер и ключ…', 'settings:'),
-                              ('Разрешения macOS…', 'permissions:'), ('Выход', 'quit:')]:
+                              ('Разрешения macOS…', 'permissions:'),
+                              ('Удалить сохранённый ключ', 'forget:'), ('Выход', 'quit:')]:
             item = A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, '')
             item.setTarget_(self)
             self.menu.addItem_(item)
@@ -86,6 +88,33 @@ class Controller(NSObject):
         self.text.setAlignment_(A.NSTextAlignmentRight)
         self.text.cell().setWraps_(True)
         self.panel.contentView().addSubview_(self.text)
+
+    @objc.python_method
+    def activate_session(self, session):
+        self.session = session
+        self.generation += 1
+        self.status.button().setToolTip_(
+            'abj — ' + session.provider + ' / ' + session.model if session else 'abj — ключ не задан')
+
+    @objc.python_method
+    def restore_session(self):
+        try:
+            self.activate_session(CredentialStore().load())
+        except RuntimeError as error:
+            alert('Связка ключей', str(error))
+        if self.session is None:
+            self.settings_(None)
+
+    def forget_(self, sender):
+        try:
+            CredentialStore().delete()
+        except RuntimeError as error:
+            alert('Ключ не удалён', str(error))
+            return
+        self.activate_session(None)
+        self.hide_(None)
+        self.gesture.reset()
+        alert('Ключ удалён', 'Сохранённый ключ удалён. Новый ключ можно задать в меню «Провайдер и ключ…».')
 
     @objc.python_method
     def install_monitors(self):
@@ -154,7 +183,8 @@ class Controller(NSObject):
         box = A.NSAlert.alloc().init()
         box.setMessageText_('abj — OpenAI / Gemini')
         box.setInformativeText_('Снимок основного экрана отправляется выбранному провайдеру. '
-            'Нужны интернет, действующий API-ключ и квота. Ключ хранится только в памяти до выхода.')
+            'Ключ, провайдер и модель сохраняются в Связке ключей macOS и восстанавливаются при запуске. '
+            'Пустой ключ оставляет текущий, если провайдер не изменён.')
         box.addButtonWithTitle_('Применить')
         box.addButtonWithTitle_('Отмена')
         view = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 430, 175))
@@ -170,6 +200,8 @@ class Controller(NSObject):
         view.addSubview_(label('Модель', NSMakeRect(0, 65, 100, 24)))
         model = A.NSTextField.alloc().initWithFrame_(NSMakeRect(110, 65, 310, 26))
         model.setPlaceholderString_('Пусто — модель по умолчанию')
+        if self.session:
+            model.setPlaceholderString_('Пусто — текущая модель / модель нового провайдера')
         view.addSubview_(model)
         view.addSubview_(label('OpenAI: gpt-5-mini\nGemini: gemini-4-hydrogen', NSMakeRect(0, 5, 425, 48)))
         box.setAccessoryView_(view)
@@ -178,14 +210,18 @@ class Controller(NSObject):
         try:
             if box.runModal() == A.NSAlertFirstButtonReturn:
                 try:
-                    session = Session(str(provider.titleOfSelectedItem()), str(key.stringValue()),
-                                      str(model.stringValue()))
-                except ValueError as error:
+                    chosen = str(provider.titleOfSelectedItem())
+                    same = self.session is not None and self.session.provider == chosen
+                    entered_key = str(key.stringValue()).strip()
+                    entered_model = str(model.stringValue()).strip()
+                    session = Session(chosen,
+                        entered_key or (self.session.key if same else ''),
+                        entered_model or (self.session.model if same else ''))
+                    CredentialStore().save(session)
+                except (ValueError, RuntimeError) as error:
                     alert('Настройки не сохранены', str(error))
                     return
-                self.session = session
-                self.generation += 1  # Discard a pending answer from an earlier session.
-                self.status.button().setToolTip_('abj — ' + session.provider + ' / ' + session.model)
+                self.activate_session(session)
         finally:
             key.setStringValue_('')
             self.configuring = False
@@ -256,12 +292,23 @@ def self_test(controller, report_path):
     assert not controller.armed
     controller.toggle_(None)
     assert controller.armed
-    assert controller.status.menu().numberOfItems() == 6
+    assert controller.status.menu().numberOfItems() == 7
     assert A.NSApp.mainMenu().itemAtIndex_(0).submenu().numberOfItems() == 4
     # Build the actual settings dialog, then cancel it without credentials.
     AppHelper.callAfter(A.NSApp.abortModal)
     controller.settings_(None)
     assert controller.session is None and not controller.configuring
+    # Isolated synthetic entry: never read or change the user's saved session.
+    import uuid
+    service = 'io.github.zimbwq.abjmac.selftest.' + uuid.uuid4().hex
+    store = CredentialStore(service=service)
+    try:
+        expected = Session('Gemini', 'synthetic-self-test-key')
+        store.save(expected)
+        assert CredentialStore(service=service).load() == expected
+    finally:
+        store.delete()
+    assert store.load() is None
     # Exercise native dependencies and the exact SSL CA path from the bundle.
     import certifi
     import ssl
@@ -271,7 +318,7 @@ def self_test(controller, report_path):
     report = {'status': 'ok', 'architecture': platform.machine(),
               'checks': ['Cocoa menu', 'settings dialog', 'Edit/paste menu',
                          'transparent panel show/hide', 'arm toggle',
-                         'Pillow PNG', 'bundled TLS certificates'],
+                         'Pillow PNG', 'bundled TLS certificates', 'Keychain save/restore/delete'],
               'not_tested': ['user permissions', 'real screenshot', 'global input', 'live paid APIs']}
     Path(report_path).write_text(json.dumps(report, indent=2), encoding='utf-8')
 
@@ -286,7 +333,7 @@ def main():
         self_test(controller, sys.argv[2])
         return
     controller.install_monitors()
-    AppHelper.callAfter(controller.settings_, None)
+    AppHelper.callAfter(controller.restore_session)
     AppHelper.runEventLoop()
 
 
