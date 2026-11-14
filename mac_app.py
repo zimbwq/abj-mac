@@ -7,6 +7,7 @@ from pathlib import Path
 
 import AppKit as A
 import Quartz
+import ApplicationServices as AX
 import objc
 from Foundation import NSObject, NSMakeRect, NSRunLoop, NSDate
 from PyObjCTools import AppHelper
@@ -123,7 +124,7 @@ class Controller(NSObject):
         for monitor in self.monitors:
             A.NSEvent.removeMonitor_(monitor)
         self.monitors = []
-        self.monitor_permission = bool(Quartz.AXIsProcessTrusted())
+        self.monitor_permission = bool(AX.AXIsProcessTrusted())
         # Mouse monitoring can work without Accessibility; keyboard monitoring cannot.
         monitor = A.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
             A.NSEventMaskLeftMouseDown, self.event)
@@ -148,7 +149,7 @@ class Controller(NSObject):
     def watch_permissions(self):
         if not self.watching_permissions:
             return
-        if bool(Quartz.AXIsProcessTrusted()) != self.monitor_permission:
+        if bool(AX.AXIsProcessTrusted()) != self.monitor_permission:
             self.install_monitors()
         AppHelper.callLater(2, self.watch_permissions)
 
@@ -254,7 +255,7 @@ class Controller(NSObject):
 
     def permissions_(self, sender):
         Quartz.CGRequestScreenCaptureAccess()
-        Quartz.AXIsProcessTrustedWithOptions({Quartz.kAXTrustedCheckOptionPrompt: True})
+        AX.AXIsProcessTrustedWithOptions({AX.kAXTrustedCheckOptionPrompt: True})
         alert('Разрешения macOS',
               'В Системных настройках → Конфиденциальность и безопасность разрешите abj '
               '«Запись экрана» и «Универсальный доступ». Затем полностью закройте и откройте abj. '
@@ -344,11 +345,11 @@ def self_test(controller, report_path):
         assert not controller.panel.isVisible()
     # Check permission changes reinstall monitors without generating real global input.
     from unittest.mock import patch
-    with patch.object(Quartz, 'AXIsProcessTrusted', return_value=False):
+    with patch.object(AX, 'AXIsProcessTrusted', return_value=False):
         controller.install_monitors()
         assert 'Универсальный доступ' in str(controller.menu.itemAtIndex_(2).title())
     controller.watching_permissions = True
-    with patch.object(Quartz, 'AXIsProcessTrusted', return_value=True), \
+    with patch.object(AX, 'AXIsProcessTrusted', return_value=True), \
             patch.object(controller, 'install_monitors') as reinstall, \
             patch.object(AppHelper, 'callLater'):
         controller.watch_permissions()
