@@ -3,7 +3,7 @@ from dataclasses import replace
 import AppKit as A
 import objc
 from Foundation import NSObject, NSMakeRect
-from overlay_preferences import OverlayPreferences, POSITIONS, MODIFIERS, shortcut_label
+from overlay_preferences import OverlayPreferences, POSITIONS, MODIFIERS, TRIGGERS, shortcut_label
 
 SAMPLE = '1) A\n2) B, C\n3) D — пример ответа'
 
@@ -25,21 +25,21 @@ class OverlayEditor(NSObject):
         self.values = {}
         style = A.NSWindowStyleMaskTitled | A.NSWindowStyleMaskClosable
         self.window = A.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 570, 570), style, A.NSBackingStoreBuffered, False)
-        self.window.setTitle_('abj — Настройка текста')
+            NSMakeRect(0, 0, 570, 660), style, A.NSBackingStoreBuffered, False)
+        self.window.setTitle_('abj — Текст и запуск')
         self.window.setReleasedWhenClosed_(False)
         self.window.setDelegate_(self)
         view = self.window.contentView()
-        title = label('Настройте текст прямо на экране', NSMakeRect(24, 526, 520, 28))
+        title = label('Настройте текст и способ запуска', NSMakeRect(24, 616, 520, 28))
         title.setFont_(A.NSFont.boldSystemFontOfSize_(19))
         view.addSubview_(title)
-        view.addSubview_(label('Предпросмотр не отправляет снимки и не использует API.', NSMakeRect(24, 500, 520, 22)))
+        view.addSubview_(label('Предпросмотр не отправляет снимки и не использует API.', NSMakeRect(24, 590, 520, 22)))
         for name, title, low, high, y in [
-                ('duration', 'Время показа', 0, 300, 450),
-                ('font_size', 'Размер шрифта', 10, 72, 360),
-                ('width', 'Ширина текста', 180, 1200, 315),
-                ('margin', 'Отступ от края', 0, 200, 270),
-                ('opacity', 'Непрозрачность', 15, 100, 225)]:
+                ('duration', 'Время показа', 0, 300, 540),
+                ('font_size', 'Размер шрифта', 10, 72, 450),
+                ('width', 'Ширина текста', 180, 1200, 405),
+                ('margin', 'Отступ от края', 0, 200, 360),
+                ('opacity', 'Непрозрачность', 15, 100, 315)]:
             view.addSubview_(label(title, NSMakeRect(24, y, 155, 24)))
             slider = A.NSSlider.alloc().initWithFrame_(NSMakeRect(182, y, 255, 24))
             slider.setMinValue_(low)
@@ -51,24 +51,33 @@ class OverlayEditor(NSObject):
             self.values[name] = label('', NSMakeRect(445, y, 110, 24))
             view.addSubview_(slider)
             view.addSubview_(self.values[name])
-        view.addSubview_(label('Положение', NSMakeRect(24, 405, 150, 24)))
-        position = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(182, 405, 355, 26), False)
+        view.addSubview_(label('Положение', NSMakeRect(24, 495, 150, 24)))
+        position = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(182, 495, 355, 26), False)
         position.addItemsWithTitles_(list(POSITIONS.values()))
         position.setTarget_(self)
         position.setAction_('changed:')
         self.controls['position'] = position
         view.addSubview_(position)
-        view.addSubview_(label('Цвет текста', NSMakeRect(24, 180, 150, 24)))
-        color = A.NSColorWell.alloc().initWithFrame_(NSMakeRect(182, 178, 65, 30))
+        view.addSubview_(label('Цвет текста', NSMakeRect(24, 270, 150, 24)))
+        color = A.NSColorWell.alloc().initWithFrame_(NSMakeRect(182, 268, 65, 30))
         color.setTarget_(self)
         color.setAction_('changed:')
         color.setContinuous_(True)
         self.controls['color'] = color
         view.addSubview_(color)
-        self.color_value = label('', NSMakeRect(260, 180, 160, 24))
+        self.color_value = label('', NSMakeRect(260, 270, 160, 24))
         view.addSubview_(self.color_value)
-        view.addSubview_(label('Скрыть текст', NSMakeRect(24, 135, 150, 24)))
-        self.key_button = self.button('Esc', 'record:', NSMakeRect(182, 130, 355, 32))
+        view.addSubview_(label('Скрыть текст', NSMakeRect(24, 225, 150, 24)))
+        self.key_button = self.button('Esc', 'record:', NSMakeRect(182, 220, 355, 32))
+        view.addSubview_(label('Способ запуска', NSMakeRect(24, 180, 150, 24)))
+        trigger = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(182, 180, 355, 26), False)
+        trigger.addItemsWithTitles_(list(TRIGGERS.values()))
+        trigger.setTarget_(self)
+        trigger.setAction_('changed:')
+        self.controls['trigger_mode'] = trigger
+        view.addSubview_(trigger)
+        view.addSubview_(label('Бинд запуска', NSMakeRect(24, 135, 150, 24)))
+        self.trigger_button = self.button('', 'recordTrigger:', NSMakeRect(182, 130, 355, 32))
         self.hint = label('Нажмите кнопку, затем клавишу или сочетание клавиш.', NSMakeRect(24, 100, 520, 25))
         view.addSubview_(self.hint)
         self.button('Сбросить', 'reset:', NSMakeRect(20, 52, 105, 30))
@@ -96,6 +105,7 @@ class OverlayEditor(NSObject):
             value = getattr(self.draft, name)
             self.controls[name].setDoubleValue_(value * 100 if name == 'opacity' else value)
         self.controls['position'].selectItemAtIndex_(list(POSITIONS).index(self.draft.position))
+        self.controls['trigger_mode'].selectItemAtIndex_(list(TRIGGERS).index(self.draft.trigger_mode))
         rgb = [int(self.draft.color[i:i+2], 16) / 255 for i in (1, 3, 5)]
         self.controls['color'].setColor_(A.NSColor.colorWithSRGBRed_green_blue_alpha_(*rgb, 1.0))
         self.update_labels()
@@ -116,6 +126,7 @@ class OverlayEditor(NSObject):
             field.setStringValue_(text)
         self.color_value.setStringValue_(self.draft.color.upper())
         self.key_button.setTitle_(self.draft.key_label)
+        self.trigger_button.setTitle_(self.draft.trigger_label)
 
     @objc.python_method
     def open(self):
@@ -130,33 +141,61 @@ class OverlayEditor(NSObject):
     def changed_(self, sender):
         if not self.active:
             return
+        self.recording = False
         values = {name: int(round(control.doubleValue())) for name, control in self.controls.items()
                   if name in self.values}
         values['opacity'] /= 100
         values['position'] = list(POSITIONS)[self.controls['position'].indexOfSelectedItem()]
+        values['trigger_mode'] = list(TRIGGERS)[self.controls['trigger_mode'].indexOfSelectedItem()]
         color = self.controls['color'].color().colorUsingColorSpace_(A.NSColorSpace.sRGBColorSpace())
         if color is not None:
             values['color'] = '#' + ''.join(f'{round(c * 255):02x}' for c in
                 (color.redComponent(), color.greenComponent(), color.blueComponent()))
-        self.draft = replace(self.draft, **values)
+        try:
+            self.draft = replace(self.draft, **values)
+        except ValueError as error:
+            self.note.setStringValue_(str(error))
+            self.populate()
+            return
         self.update_labels()
         self.preview()
 
     def record_(self, sender):
-        self.recording = not self.recording
+        self.recording = False if self.recording == 'hide' else 'hide'
+        self.update_labels()
         self.key_button.setTitle_('Нажмите клавишу…' if self.recording else self.draft.key_label)
+
+    def recordTrigger_(self, sender):
+        self.recording = False if self.recording == 'trigger' else 'trigger'
+        self.update_labels()
+        self.trigger_button.setTitle_('Нажмите клавишу…' if self.recording else self.draft.trigger_label)
 
     @objc.python_method
     def key_event(self, event):
+        if event.isARepeat():
+            return None if self.recording else event
         if self.recording:
             flags = int(event.modifierFlags()) & MODIFIERS
             code = int(event.keyCode())
-            self.draft = replace(self.draft, key_code=code, key_modifiers=flags,
-                key_label=shortcut_label(code, str(event.charactersIgnoringModifiers() or ''), flags))
+            name = shortcut_label(code, str(event.charactersIgnoringModifiers() or ''), flags)
+            if self.recording == 'trigger':
+                values = {'trigger_code': code, 'trigger_modifiers': flags, 'trigger_label': name,
+                          'trigger_mode': 'keyboard' if self.draft.trigger_mode == 'triple' else self.draft.trigger_mode}
+            else:
+                values = {'key_code': code, 'key_modifiers': flags, 'key_label': name}
+            try:
+                self.draft = replace(self.draft, **values)
+            except ValueError as error:
+                self.note.setStringValue_(str(error))
+                return None
             self.recording = False
-            self.update_labels()
+            self.populate()
             self.preview()
             self.note.setStringValue_('Клавиша выбрана. Нажмите её ещё раз для проверки.')
+            return None
+        if self.draft.matches_trigger(event.keyCode(), event.modifierFlags()):
+            self.preview()
+            self.note.setStringValue_('Бинд запуска работает. Это тест — запрос API не отправлен.')
             return None
         if self.draft.matches(event.keyCode(), event.modifierFlags()):
             self.owner.hide_(None)

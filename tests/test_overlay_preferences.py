@@ -63,3 +63,31 @@ class OverlayPreferenceTests(unittest.TestCase):
         self.assertFalse(prefs.matches(53, (1 << 20)))
         self.assertEqual(shortcut_label(53, '\x1b', 0), 'Esc')
         self.assertEqual(shortcut_label(7, 'x', (1 << 20) | (1 << 17)), '⇧⌘X')
+
+    def test_trigger_modes_and_modifiers(self):
+        for mode, mouse, keyboard in [('triple', True, False), ('keyboard', False, True), ('both', True, True)]:
+            prefs = OverlayPreferences(trigger_mode=mode)
+            self.assertEqual(prefs.uses_mouse(), mouse)
+            self.assertEqual(prefs.matches_trigger(49, (1 << 17) | (1 << 20)), keyboard)
+            self.assertFalse(prefs.matches_trigger(49, 0))
+            self.assertFalse(prefs.matches_trigger(7, (1 << 17) | (1 << 20)))
+
+    def test_conflicting_shortcuts_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'разные клавиши'):
+            OverlayPreferences(trigger_mode='both', trigger_code=53, trigger_modifiers=0)
+        for field, value in [('trigger_mode', 'invalid'), ('trigger_code', 128),
+                             ('trigger_modifiers', -1), ('trigger_label', '\n')]:
+            with self.assertRaises(ValueError):
+                replace(OverlayPreferences(), **{field: value})
+
+    def test_old_settings_upgrade_and_new_trigger_persists(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'overlay.json'
+            path.write_text('{"font_size": 30, "duration": 0}')
+            store = PreferenceStore(path)
+            old = store.load()
+            self.assertEqual((old.font_size, old.duration, old.trigger_mode), (30, 0, 'triple'))
+            new = replace(old, trigger_mode='keyboard', trigger_code=8,
+                          trigger_modifiers=1 << 19, trigger_label='⌥C')
+            store.save(new)
+            self.assertEqual(PreferenceStore(path).load(), new)

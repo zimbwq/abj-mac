@@ -74,11 +74,11 @@ class Controller(NSObject):
         self.status.button().setTitle_('abj')
         self.menu = A.NSMenu.alloc().init()
         self.menu.setAutoenablesItems_(False)
-        for title, action in [('Снять экран', 'capture:'), ('Тройной клик: вкл.', 'toggle:'),
+        for title, action in [('Снять экран', 'capture:'), ('Быстрый запуск: вкл.', 'toggle:'),
                               ('Скрыть ответ (Esc)', 'dismiss:'), ('Провайдер и ключ…', 'settings:'),
                               ('Разрешения macOS…', 'permissions:'),
                               ('Удалить сохранённый ключ', 'forget:'),
-                              ('Настройка текста…', 'appearance:'), ('Выход', 'quit:')]:
+                              ('Настройка текста и запуска…', 'appearance:'), ('Выход', 'quit:')]:
             item = A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, '')
             item.setTarget_(self)
             self.menu.addItem_(item)
@@ -114,6 +114,15 @@ class Controller(NSObject):
         name = self.preferences.key_label
         suffix = '' if self.keyboard_available else ': проверьте Универсальный доступ'
         self.menu.itemAtIndex_(2).setTitle_(f'Скрыть ответ ({name}{suffix})')
+        mode = self.preferences.trigger_mode
+        trigger = 'тройной клик' if mode == 'triple' else self.preferences.trigger_label
+        if mode == 'both':
+            trigger = 'клик / ' + trigger
+        state = 'вкл.' if self.armed else 'выкл.'
+        self.menu.itemAtIndex_(1).setTitle_(f'Быстрый запуск: {state} — {trigger}')
+        self.menu.itemAtIndex_(1).setToolTip_(
+            'Для бинда нужен Универсальный доступ.' if mode != 'triple' and not self.keyboard_available
+            else 'Включить или приостановить выбранный способ запуска.')
 
     def appearance_(self, sender):
         if self.editor and self.editor.active:
@@ -134,6 +143,7 @@ class Controller(NSObject):
         self.hide_(None)
         if preferences is not None:
             self.preferences = preferences
+            self.gesture.reset()
             self.update_shortcut_label()
         self.configuring = False
         visible, text, deadline = self.saved_overlay
@@ -212,9 +222,18 @@ class Controller(NSObject):
     def local_event(self, event):
         if self.editor and self.editor.active:
             return self.editor.key_event(event)
-        if not self.configuring and self.preferences.matches(event.keyCode(), event.modifierFlags()):
-            self.dismiss_(None)
+        self.handle_key(event)
         return event
+
+    @objc.python_method
+    def handle_key(self, event):
+        if self.configuring:
+            return
+        if self.preferences.matches(event.keyCode(), event.modifierFlags()):
+            self.dismiss_(None)
+        elif (self.armed and not self.busy and not event.isARepeat()
+              and self.preferences.matches_trigger(event.keyCode(), event.modifierFlags())):
+            self.capture_(None)
 
     @objc.python_method
     def event(self, event):
@@ -222,9 +241,10 @@ class Controller(NSObject):
             if self.editor and self.editor.active:
                 if not self.editor.recording:
                     self.editor.key_event(event)
-            elif not self.configuring and self.preferences.matches(event.keyCode(), event.modifierFlags()):
-                self.dismiss_(None)
-        elif self.armed and self.session and not self.busy and not self.configuring:
+            else:
+                self.handle_key(event)
+        elif (self.armed and self.session and not self.busy and not self.configuring
+              and self.preferences.uses_mouse()):
             point = A.NSEvent.mouseLocation()
             if self.gesture.click(event.timestamp(), point.x, point.y):
                 self.capture_(None)
@@ -232,7 +252,7 @@ class Controller(NSObject):
     def toggle_(self, sender):
         self.armed = not self.armed
         self.gesture.reset()
-        self.menu.itemAtIndex_(1).setTitle_('Тройной клик: ' + ('вкл.' if self.armed else 'выкл.'))
+        self.update_shortcut_label()
 
     def hide_(self, sender):
         self.overlay_generation += 1
@@ -454,7 +474,8 @@ def self_test(controller, report_path):
                          'local/global Esc handlers', 'Esc dismisses pending answer',
                          'Accessibility status and monitor refresh',
                          'live overlay preview', 'preview cancel/apply/reset',
-                         'custom shortcut recording', 'overlay preference persistence'],
+                         'custom shortcut recording', 'overlay preference persistence',
+                         'capture shortcut routing and autorepeat guard', 'capture trigger modes'],
               'not_tested': ['user permissions', 'real screenshot', 'global input', 'live paid APIs']}
     Path(report_path).write_text(json.dumps(report, indent=2), encoding='utf-8')
 

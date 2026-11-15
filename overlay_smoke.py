@@ -1,5 +1,6 @@
 """Cocoa regression checks run by --self-test with isolated preferences."""
 from pathlib import Path
+from dataclasses import replace
 import tempfile
 from unittest.mock import patch
 import AppKit as A
@@ -72,6 +73,22 @@ def check_editor(controller, report_path):
         assert not controller.panel.isVisible()
         editor.testTimer_(None)
         assert controller.panel.isVisible() and controller.overlay_deadline is None
+        # Bind capture independently, rejecting the currently assigned dismiss shortcut.
+        trigger = A.NSEvent.keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode_(
+            A.NSEventTypeKeyDown, (0, 0), A.NSEventModifierFlagCommand, 0, 0, None, 'b', 'b', False, 11)
+        repeated = A.NSEvent.keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode_(
+            A.NSEventTypeKeyDown, (0, 0), A.NSEventModifierFlagCommand, 0, 0, None, 'b', 'b', True, 11)
+        editor.recordTrigger_(None)
+        controller.local_event(event)
+        assert editor.recording == 'trigger' and editor.draft.trigger_mode == 'triple'
+        controller.local_event(trigger)
+        assert not editor.recording and editor.draft.trigger_label == '⌘B'
+        assert editor.draft.trigger_mode == 'keyboard'
+        with patch.object(controller, 'capture_') as capture:
+            controller.local_event(trigger)
+            controller.event(trigger)
+            capture.assert_not_called()  # Preview never calls the real capture/API path.
+        assert 'Это тест' in str(editor.note.stringValue())
         snapshot(editor.window.contentView(), Path(report_path).with_name(Path(report_path).stem + '-settings.png'), background=True)
         snapshot(controller.panel.contentView(), Path(report_path).with_name(Path(report_path).stem + '-preview.png'))
         with patch.object(controller.preference_store, 'save', side_effect=RuntimeError('test save failure')):
@@ -83,6 +100,33 @@ def check_editor(controller, report_path):
         controller.show('real answer')
         controller.event(event)
         assert not controller.panel.isVisible()
+        # Both event routes dispatch the binding; repeats, pause, busy and other keys do not.
+        with patch.object(controller, 'capture_') as capture:
+            controller.local_event(trigger)
+            controller.event(trigger)
+            assert capture.call_count == 2
+            controller.event(repeated)
+            controller.armed = False
+            controller.event(trigger)
+            controller.armed = True
+            controller.busy = True
+            controller.local_event(trigger)
+            controller.busy = False
+            controller.event(event)
+            assert capture.call_count == 2
+        from cloud_backend import Session
+        controller.session = Session('Gemini', 'synthetic-smoke-test')
+        for mode, expected in [('keyboard', 0), ('triple', 1), ('both', 1)]:
+            controller.preferences = replace(controller.preferences, trigger_mode=mode)
+            controller.gesture.reset()
+            with patch.object(controller, 'capture_') as capture:
+                for timestamp in (1.0, 1.1, 1.2):
+                    mouse = A.NSEvent.mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure_(
+                        A.NSEventTypeLeftMouseDown, (0, 0), 0, timestamp, 0, None, 0, 1, 1.0)
+                    controller.event(mouse)
+                assert capture.call_count == expected
+        controller.preferences = replace(controller.preferences, trigger_mode='keyboard')
+        controller.session = None
         # A newly opened editor starts from saved settings; reset can be cancelled.
         controller.appearance_(None)
         editor = controller.editor

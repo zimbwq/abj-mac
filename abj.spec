@@ -8,7 +8,7 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='abj', debug=False,
           target_arch='arm64', codesign_identity=None, entitlements_file=None)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='abj')
 app = BUNDLE(coll, name='abj.app', bundle_identifier='io.github.zimbwq.abjmac',
-             info_plist={'CFBundleShortVersionString': '1.2.0', 'CFBundleVersion': '4',
+             info_plist={'CFBundleShortVersionString': '1.3.0', 'CFBundleVersion': '5',
                          'LSUIElement': True, 'LSMinimumSystemVersion': '15.0',
                          'NSHighResolutionCapable': True,
                          'NSScreenCaptureUsageDescription': 'Send a screenshot to your selected AI provider.',

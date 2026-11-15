@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 MODIFIERS = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
+TRIGGERS = {'triple': 'Тройной клик', 'keyboard': 'Клавиша / сочетание', 'both': 'Оба способа'}
 POSITIONS = {'bottom-right': 'Справа внизу', 'bottom-left': 'Слева внизу',
              'top-right': 'Справа вверху', 'top-left': 'Слева вверху',
              'bottom-center': 'По центру внизу', 'top-center': 'По центру вверху',
@@ -25,10 +26,15 @@ class OverlayPreferences:
     key_code: int = 53
     key_modifiers: int = 0
     key_label: str = 'Esc'
+    trigger_mode: str = 'triple'
+    trigger_code: int = 49
+    trigger_modifiers: int = (1 << 17) | (1 << 20)
+    trigger_label: str = '⇧⌘Space'
 
     def __post_init__(self):
         for name, low, high in [('duration', 0, 300), ('font_size', 10, 72),
-                                ('width', 180, 1200), ('margin', 0, 200), ('key_code', 0, 127)]:
+                                ('width', 180, 1200), ('margin', 0, 200), ('key_code', 0, 127),
+                                ('trigger_code', 0, 127)]:
             value = getattr(self, name)
             if type(value) is not int or not low <= value <= high:
                 raise ValueError('Некорректная настройка: ' + name)
@@ -43,9 +49,24 @@ class OverlayPreferences:
             raise ValueError('Некорректное сочетание клавиш.')
         if not isinstance(self.key_label, str) or not 1 <= len(self.key_label) <= 40 or not self.key_label.isprintable():
             raise ValueError('Некорректное название клавиши.')
+        if self.trigger_mode not in TRIGGERS:
+            raise ValueError('Некорректный способ запуска.')
+        if type(self.trigger_modifiers) is not int or self.trigger_modifiers & ~MODIFIERS:
+            raise ValueError('Некорректный бинд запуска.')
+        if not isinstance(self.trigger_label, str) or not 1 <= len(self.trigger_label) <= 40 or not self.trigger_label.isprintable():
+            raise ValueError('Некорректное название бинда.')
+        if self.trigger_mode != 'triple' and (self.key_code, self.key_modifiers) == (self.trigger_code, self.trigger_modifiers):
+            raise ValueError('Запуск и скрытие должны использовать разные клавиши.')
 
     def matches(self, key_code, flags):
         return self.key_code == key_code and self.key_modifiers == flags & MODIFIERS
+
+    def matches_trigger(self, key_code, flags):
+        return (self.trigger_mode in ('keyboard', 'both') and self.trigger_code == key_code
+                and self.trigger_modifiers == flags & MODIFIERS)
+
+    def uses_mouse(self):
+        return self.trigger_mode in ('triple', 'both')
 
 
 def shortcut_label(key_code, characters, flags):
