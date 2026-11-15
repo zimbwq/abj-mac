@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 import AppKit as A
+from PyObjCTools import AppHelper
 
 from overlay_preferences import OverlayPreferences, PreferenceStore
 
@@ -78,7 +79,7 @@ def check_editor(controller, report_path):
         editor = controller.editor
         editor.controls['duration'].setDoubleValue_(3)
         editor.changed_(None)
-        with patch('mac_app.AppHelper.callLater') as schedule:
+        with patch.object(AppHelper, 'callLater') as schedule:
             editor.testTimer_(None)
             assert schedule.call_args.args[0] == 3
         generation = controller.overlay_generation
