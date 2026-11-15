@@ -20,7 +20,11 @@ def snapshot(view, path, background=False):
         canvas.lockFocus()
         A.NSColor.windowBackgroundColor().set()
         A.NSRectFill(NSMakeRect(0, 0, size.width, size.height))
-        bitmap.drawInRect_(NSMakeRect(0, 0, size.width, size.height))
+        foreground = A.NSImage.alloc().initWithSize_(size)
+        foreground.addRepresentation_(bitmap)
+        foreground.drawInRect_fromRect_operation_fraction_(
+            NSMakeRect(0, 0, size.width, size.height), NSMakeRect(0, 0, size.width, size.height),
+            A.NSCompositingOperationSourceOver, 1.0)
         canvas.unlockFocus()
         bitmap = A.NSBitmapImageRep.imageRepWithData_(canvas.TIFFRepresentation())
     data = bitmap.representationUsingType_properties_(A.NSBitmapImageFileTypePNG, {})
