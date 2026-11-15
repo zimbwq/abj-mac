@@ -3,6 +3,7 @@ import json
 import platform
 import sys
 import threading
+import time
 from pathlib import Path
 
 import AppKit as A
@@ -15,6 +16,8 @@ from PyObjCTools import AppHelper
 from cloud_backend import Session, DEFAULT_MODELS, answer_visual, encode_image
 from gestures import TripleClick
 from credentials import CredentialStore
+from overlay_preferences import OverlayPreferences, PreferenceStore, layout_frame
+from overlay_settings import OverlayEditor
 
 
 def alert(title, message):
@@ -62,14 +65,20 @@ class Controller(NSObject):
         self.monitors = []
         self.monitor_permission = None
         self.watching_permissions = False
+        self.keyboard_available = False
+        self.preferences = OverlayPreferences()
+        self.preference_store = PreferenceStore()
+        self.editor = None
+        self.overlay_deadline = None
         self.status = A.NSStatusBar.systemStatusBar().statusItemWithLength_(A.NSVariableStatusItemLength)
         self.status.button().setTitle_('abj')
         self.menu = A.NSMenu.alloc().init()
         self.menu.setAutoenablesItems_(False)
         for title, action in [('Снять экран', 'capture:'), ('Тройной клик: вкл.', 'toggle:'),
-                              ('Скрыть ответ (Esc)', 'hide:'), ('Провайдер и ключ…', 'settings:'),
+                              ('Скрыть ответ (Esc)', 'dismiss:'), ('Провайдер и ключ…', 'settings:'),
                               ('Разрешения macOS…', 'permissions:'),
-                              ('Удалить сохранённый ключ', 'forget:'), ('Выход', 'quit:')]:
+                              ('Удалить сохранённый ключ', 'forget:'),
+                              ('Настройка текста…', 'appearance:'), ('Выход', 'quit:')]:
             item = A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, '')
             item.setTarget_(self)
             self.menu.addItem_(item)
@@ -91,6 +100,48 @@ class Controller(NSObject):
         self.text.setAlignment_(A.NSTextAlignmentRight)
         self.text.cell().setWraps_(True)
         self.panel.contentView().addSubview_(self.text)
+
+    @objc.python_method
+    def restore_preferences(self):
+        try:
+            self.preferences = self.preference_store.load()
+        except RuntimeError as error:
+            alert('Настройки текста', str(error))
+        self.update_shortcut_label()
+
+    @objc.python_method
+    def update_shortcut_label(self):
+        name = self.preferences.key_label
+        suffix = '' if self.keyboard_available else ': проверьте Универсальный доступ'
+        self.menu.itemAtIndex_(2).setTitle_(f'Скрыть ответ ({name}{suffix})')
+
+    def appearance_(self, sender):
+        if self.editor and self.editor.active:
+            self.editor.window.makeKeyAndOrderFront_(None)
+            return
+        if self.configuring:
+            return
+        self.saved_overlay = (bool(self.panel.isVisible()), str(self.text.stringValue()), self.overlay_deadline)
+        self.configuring = True
+        self.generation += 1
+        self.gesture.reset()
+        self.editor = OverlayEditor.alloc().init()
+        self.editor.setup(self)
+        self.editor.open()
+
+    @objc.python_method
+    def finish_preferences(self, preferences):
+        self.hide_(None)
+        if preferences is not None:
+            self.preferences = preferences
+            self.update_shortcut_label()
+        self.configuring = False
+        visible, text, deadline = self.saved_overlay
+        if visible:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is None or remaining > 0:
+                self.show(text, lifetime=remaining if preferences is None else None,
+                          preview=preferences is None and deadline is None)
 
     @objc.python_method
     def activate_session(self, session):
@@ -136,9 +187,8 @@ class Controller(NSObject):
                 A.NSEventMaskKeyDown, self.event)
             if keyboard_monitor is not None:
                 self.monitors.append(keyboard_monitor)
-        self.menu.itemAtIndex_(2).setTitle_(
-            'Скрыть ответ (Esc)' if keyboard_monitor is not None else
-            'Скрыть ответ (Esc: проверьте Универсальный доступ)')
+        self.keyboard_available = keyboard_monitor is not None
+        self.update_shortcut_label()
         # Local Esc also works while one of our own windows has focus.
         monitor = A.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
             A.NSEventMaskKeyDown, self.local_event)
@@ -160,14 +210,19 @@ class Controller(NSObject):
 
     @objc.python_method
     def local_event(self, event):
-        if event.keyCode() == 53:
+        if self.editor and self.editor.active:
+            return self.editor.key_event(event)
+        if not self.configuring and self.preferences.matches(event.keyCode(), event.modifierFlags()):
             self.dismiss_(None)
         return event
 
     @objc.python_method
     def event(self, event):
         if event.type() == A.NSEventTypeKeyDown:
-            if event.keyCode() == 53:
+            if self.editor and self.editor.active:
+                if not self.editor.recording:
+                    self.editor.key_event(event)
+            elif not self.configuring and self.preferences.matches(event.keyCode(), event.modifierFlags()):
                 self.dismiss_(None)
         elif self.armed and self.session and not self.busy and not self.configuring:
             point = A.NSEvent.mouseLocation()
@@ -181,22 +236,35 @@ class Controller(NSObject):
 
     def hide_(self, sender):
         self.overlay_generation += 1
+        self.overlay_deadline = None
         self.panel.orderOut_(None)
 
     @objc.python_method
-    def show(self, text):
+    def show(self, text, preferences=None, preview=False, lifetime=None):
         self.hide_(None)
+        prefs = preferences or self.preferences
         rect = A.NSScreen.screens()[0].visibleFrame()
-        width = min(440, rect.size.width - 48)
+        screen = (rect.origin.x, rect.origin.y, rect.size.width, rect.size.height)
+        width = layout_frame(prefs, screen, 30)[2]
+        self.text.setFont_(A.NSFont.systemFontOfSize_(prefs.font_size))
+        rgb = [int(prefs.color[i:i+2], 16) / 255 for i in (1, 3, 5)]
+        self.text.setTextColor_(A.NSColor.colorWithSRGBRed_green_blue_alpha_(*rgb, 1.0))
+        self.panel.setAlphaValue_(prefs.opacity)
+        align = A.NSTextAlignmentLeft if 'left' in prefs.position else A.NSTextAlignmentRight
+        if 'center' in prefs.position:
+            align = A.NSTextAlignmentCenter
+        self.text.setAlignment_(align)
         self.text.setStringValue_(text)
         size = self.text.cell().cellSizeForBounds_(NSMakeRect(0, 0, width, 10000))
-        height = min(max(40, size.height + 12), rect.size.height - 48)
+        left, bottom, width, height = layout_frame(prefs, screen, size.height + 12)
         self.text.setFrame_(NSMakeRect(0, 0, width, height))
-        self.panel.setFrame_display_(NSMakeRect(rect.origin.x + rect.size.width - width - 24,
-                                              rect.origin.y + 24, width, height), True)
+        self.panel.setFrame_display_(NSMakeRect(left, bottom, width, height), True)
         self.panel.orderFrontRegardless()
         generation = self.overlay_generation
-        AppHelper.callLater(25, self.expire_overlay, generation)
+        delay = prefs.duration if lifetime is None else lifetime
+        if not preview and delay > 0:
+            self.overlay_deadline = time.monotonic() + delay
+            AppHelper.callLater(delay, self.expire_overlay, generation)
 
     @objc.python_method
     def expire_overlay(self, generation):
@@ -204,6 +272,8 @@ class Controller(NSObject):
             self.hide_(None)
 
     def settings_(self, sender):
+        if self.configuring:
+            return
         self.configuring = True
         self.hide_(None)
         self.gesture.reset()
@@ -323,7 +393,7 @@ def self_test(controller, report_path):
     assert not controller.armed
     controller.toggle_(None)
     assert controller.armed
-    assert controller.status.menu().numberOfItems() == 7
+    assert controller.status.menu().numberOfItems() == 8
     assert A.NSApp.mainMenu().itemAtIndex_(0).submenu().numberOfItems() == 4
     # Build the actual settings dialog, then cancel it without credentials.
     AppHelper.callAfter(A.NSApp.abortModal)
@@ -358,6 +428,8 @@ def self_test(controller, report_path):
     for monitor in controller.monitors:
         A.NSEvent.removeMonitor_(monitor)
     controller.monitors = []
+    from overlay_smoke import check_editor
+    check_editor(controller, report_path)
     # Isolated synthetic entry: never read or change the user's saved session.
     import uuid
     service = 'io.github.zimbwq.abjmac.selftest.' + uuid.uuid4().hex
@@ -380,7 +452,9 @@ def self_test(controller, report_path):
                          'transparent panel show/hide', 'arm toggle',
                          'Pillow PNG', 'bundled TLS certificates', 'Keychain save/restore/delete',
                          'local/global Esc handlers', 'Esc dismisses pending answer',
-                         'Accessibility status and monitor refresh'],
+                         'Accessibility status and monitor refresh',
+                         'live overlay preview', 'preview cancel/apply/reset',
+                         'custom shortcut recording', 'overlay preference persistence'],
               'not_tested': ['user permissions', 'real screenshot', 'global input', 'live paid APIs']}
     Path(report_path).write_text(json.dumps(report, indent=2), encoding='utf-8')
 
@@ -394,6 +468,7 @@ def main():
     if len(sys.argv) == 3 and sys.argv[1] == '--self-test':
         self_test(controller, sys.argv[2])
         return
+    controller.restore_preferences()
     controller.install_monitors()
     controller.watching_permissions = True
     controller.watch_permissions()
