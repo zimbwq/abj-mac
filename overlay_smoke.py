@@ -4,13 +4,25 @@ import tempfile
 from unittest.mock import patch
 import AppKit as A
 from PyObjCTools import AppHelper
+from Foundation import NSRunLoop, NSDate, NSMakeRect
 
 from overlay_preferences import OverlayPreferences, PreferenceStore
 
 
-def snapshot(view, path):
+def snapshot(view, path, background=False):
+    NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
     bitmap = view.bitmapImageRepForCachingDisplayInRect_(view.bounds())
     view.cacheDisplayInRect_toBitmapImageRep_(view.bounds(), bitmap)
+    if background:
+        # cacheDisplay captures the content only; include the native window backing color.
+        size = view.bounds().size
+        canvas = A.NSImage.alloc().initWithSize_(size)
+        canvas.lockFocus()
+        A.NSColor.windowBackgroundColor().set()
+        A.NSRectFill(NSMakeRect(0, 0, size.width, size.height))
+        bitmap.drawInRect_(NSMakeRect(0, 0, size.width, size.height))
+        canvas.unlockFocus()
+        bitmap = A.NSBitmapImageRep.imageRepWithData_(canvas.TIFFRepresentation())
     data = bitmap.representationUsingType_properties_(A.NSBitmapImageFileTypePNG, {})
     assert data.writeToFile_atomically_(str(path), True)
 
@@ -56,7 +68,7 @@ def check_editor(controller, report_path):
         assert not controller.panel.isVisible()
         editor.testTimer_(None)
         assert controller.panel.isVisible() and controller.overlay_deadline is None
-        snapshot(editor.window.contentView(), Path(report_path).with_name(Path(report_path).stem + '-settings.png'))
+        snapshot(editor.window.contentView(), Path(report_path).with_name(Path(report_path).stem + '-settings.png'), background=True)
         snapshot(controller.panel.contentView(), Path(report_path).with_name(Path(report_path).stem + '-preview.png'))
         with patch.object(controller.preference_store, 'save', side_effect=RuntimeError('test save failure')):
             editor.apply_(None)
